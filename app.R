@@ -6,36 +6,30 @@ library(plotly)
 library(dplyr)
 library(tidyr)
 library(ggplot2)
+library(rlang)
 
-# source your helper functions
-# source("R/api_helpers.R")    # get_artworks(), get_artwork_details(), etc.
-# source("R/summaries.R")      # contingency... and plot helpers
-
-source("api_helpers.R")    # get_artworks(), get_artwork_details(), etc.
-source("summaries.R")      # contingency... and plot helpers
-
+# source helper functions
+source("R/api_helpers.R")    # API query functions
+source("R/summaries.R")      # summary & plot helpers
 
 ui <- navbarPage("AIC Explorer",
                  
                  ## 1) About tab
                  tabPanel("About",
                           fluidRow(
-                            column(4,
-                                   img(src = "artic_logo.png", height = "150px")
-                            ),
+                            column(4, img(src = "cover.jpg", height = "150px")),
                             column(8,
                                    h3("AIC Explorer"),
-                                   p("This Shiny app lets you query the Art Institute of Chicago API,"),
-                                   p("return tidy data frames of artworks, artists, or exhibitions,"),
-                                   p("and explore them via tables, summaries, and interactive plots."),
+                                   p("Query the Art Institute of Chicago API for artworks, artists, or exhibitions."),
+                                   p("Download raw data or explore prebuilt summaries and plots."),
                                    tags$a(href = "https://api.artic.edu/docs/", "API documentation")
                             )
                           ),
                           hr(),
                           h4("Tabs"),
                           tags$ul(
-                            tags$li(strong("Data Download:"), "Fetch raw data, subset rows & columns, and download as CSV."),
-                            tags$li(strong("Data Exploration:"), "Build contingency tables, numeric summaries, and four types of plots (including a heatmap).")
+                            tags$li(strong("Data Download:"), "Fetch raw data and save as CSV."),
+                            tags$li(strong("Data Exploration:"), "View extended summaries and interactive plots.")
                           )
                  ),
                  
@@ -43,36 +37,32 @@ ui <- navbarPage("AIC Explorer",
                  tabPanel("Data Download",
                           sidebarLayout(
                             sidebarPanel(
-                              radioButtons("entity", "Choose data to fetch:",
-                                           choices = c("Artworks", "Artists", "Exhibitions")),
-                              conditionalPanel(
-                                condition = "input.entity == 'Artworks'",
-                                textInput("art_id", "Optional artwork ID (leave blank for list):", ""),
-                                numericInput("art_page", "Page:", 1, min = 1),
-                                numericInput("art_limit", "Limit:", 50, min = 1, max = 1000),
-                                textInput("art_fields", "Fields (comma sep):", 
-                                          "id,title,artist_title,date_display,classification_titles,image_id")
+                              radioButtons("entity","Choose data to fetch:",
+                                           c("Artworks","Artists","Exhibitions")),
+                              conditionalPanel("input.entity=='Artworks'",        
+                                               textInput("art_id","Artwork ID (blank for list):",""),
+                                               numericInput("art_page","Page:",1,1),
+                                               numericInput("art_limit","Limit:",50,1,500),
+                                               textInput("art_fields","Fields (comma sep):",
+                                                         "id,title,artist_title,date_display,classification_titles,dimensions,image_id")
                               ),
-                              conditionalPanel(
-                                condition = "input.entity == 'Artists'",
-                                textInput("artist_id", "Optional artist ID (blank for list):", ""),
-                                numericInput("artist_page", "Page:", 1, min = 1),
-                                numericInput("artist_limit", "Limit:", 50, min = 1, max = 1000),
-                                textInput("artist_fields", "Fields (comma sep):",
-                                          "id,title,birth_date,death_date,nationality")
+                              conditionalPanel("input.entity=='Artists'",
+                                               textInput("artist_id","Artist ID:",""),
+                                               numericInput("artist_page","Page:",1,1),
+                                               numericInput("artist_limit","Limit:",50,1,500),
+                                               textInput("artist_fields","Fields:",
+                                                         "id,title,birth_date,death_date,nationality")
                               ),
-                              conditionalPanel(
-                                condition = "input.entity == 'Exhibitions'",
-                                numericInput("exh_page", "Page:", 1, min = 1),
-                                numericInput("exh_limit", "Limit:", 50, min = 1, max = 1000),
-                                textInput("exh_fields", "Fields (comma sep):",
-                                          "id,title,date_start,date_end,place")
+                              conditionalPanel("input.entity=='Exhibitions'",
+                                               numericInput("exh_page","Page:",1,1),
+                                               numericInput("exh_limit","Limit:",50,1),
+                                               textInput("exh_fields","Fields:",
+                                                         "id,title,date_start,date_end,place")
                               ),
-                              actionButton("fetch", "Fetch Data"),
-                              hr(),
-                              uiOutput("col_selector"),     # dynamic: choose which columns to keep
-                              sliderInput("row_sel", "Rows to keep (1 to N):", 1, 1, value = c(1,1)),
-                              downloadButton("download", "Download CSV")
+                              actionButton("fetch","Fetch Data"), hr(),
+                              uiOutput("col_selector"),
+                              uiOutput("row_selector"),
+                              downloadButton("download","Download CSV")
                             ),
                             mainPanel(
                               DTOutput("raw_table")
@@ -80,206 +70,78 @@ ui <- navbarPage("AIC Explorer",
                           )
                  ),
                  
-                 ## 3) Data Exploration tab
+                 ## 3) Data Exploration tab (Updated)
                  tabPanel("Data Exploration",
                           sidebarLayout(
                             sidebarPanel(
-                              uiOutput("dataset_selector"), # dynamic: pick which fetched dataset
-                              uiOutput("cat_selector"),     # dynamic: choose categorical var
-                              uiOutput("num_selector"),     # dynamic: choose quantitative var
-                              selectInput("plot_type", "Plot type:",
-                                          choices = c("Bar","Boxplot","Heatmap","Scatter")),
-                              uiOutput("facet_selector")    # dynamic: only shows for heatmap/scatter
+                              selectInput("summary_type","Choose summary:",
+                                          choices = c(
+                                            "Contingency by Classification"       = "contingency_classification",
+                                            "Year Summary by Classification"      = "numeric_summary_year_by_class",
+                                            "Dimension Summary by Classification" = "numeric_summary_dimensions",
+                                            "Summary by Decade"                   = "numeric_summary_by_decade"
+                                          )
+                              ),
+                              selectInput("plot_type","Choose plot:",
+                                          choices = c(
+                                            "Bar Count by Classification" = "plot_count_by_class",
+                                            "Year Boxplot by Classification" = "plot_year_boxplot",
+                                            "Heatmap Year vs Classification" = "plot_heatmap_year_class",
+                                            "Year Histogram" = "plot_year_histogram"
+                                          )
+                              )
                             ),
                             mainPanel(
-                              tabsetPanel(
-                                tabPanel("Contingency", tableOutput("ctable")),
-                                tabPanel("Summary", tableOutput("num_summary")),
-                                tabPanel("Plot", plotlyOutput("plotly"))
-                              )
+                              tableOutput("summary_tbl"),
+                              plotlyOutput("plotly_obj")
                             )
                           )
                  )
 )
 
 server <- function(input, output, session) {
-  
-  # 1) Fetch raw data
+  # Reactive: fetch raw data
   raw_data <- eventReactive(input$fetch, {
+    req(input$fetch > 0)
     switch(input$entity,
-           "Artworks"    = {
-             flds <- strsplit(input$art_fields, ",")[[1]]
-             if (nzchar(input$art_id)) {
-               get_artwork_details(input$art_id, fields = flds)
-             } else {
-               get_artworks(
-                 page   = input$art_page,
-                 limit  = input$art_limit,
-                 fields = flds
-               )
-             }
+           "Artworks" = {
+             f <- strsplit(input$art_fields, ",")[[1]]
+             if (nzchar(input$art_id)) get_artwork_details(input$art_id, fields = f)
+             else get_artworks(page = input$art_page, limit = input$art_limit, fields = f)
            },
-           "Artists"     = {
-             flds <- strsplit(input$artist_fields, ",")[[1]]
-             if (nzchar(input$artist_id)) {
-               get_artist_details(input$artist_id, fields = flds)
-             } else {
-               get_artists(
-                 page   = input$artist_page,
-                 limit  = input$artist_limit,
-                 fields = flds
-               )
-             }
+           "Artists" = {
+             f <- strsplit(input$artist_fields, ",")[[1]]
+             if (nzchar(input$artist_id)) get_artist_details(input$artist_id, fields = f)
+             else get_artists(page = input$artist_page, limit = input$artist_limit, fields = f)
            },
            "Exhibitions" = {
-             flds <- strsplit(input$exh_fields, ",")[[1]]
-             get_exhibitions(
-               page   = input$exh_page,
-               limit  = input$exh_limit,
-               fields = flds
-             )
+             f <- strsplit(input$exh_fields, ",")[[1]]
+             get_exhibitions(page = input$exh_page, limit = input$exh_limit, fields = f)
            }
     )
-  }, ignoreNULL = FALSE)
-  
-  # 2) Dynamic column selector & row slider
-  output$col_selector <- renderUI({
-    df <- raw_data()
-    req(df)
-    cols <- names(df)
-    selectInput("cols", "Select columns to keep:", choices = cols,
-                selected = cols, multiple = TRUE)
-  })
-  observeEvent(raw_data(), {
-    df <- raw_data()
-    updateSliderInput(session, "row_sel",
-                      max = nrow(df), value = c(1, min(100, nrow(df)))
-    )
   })
   
-  # 3) Render raw table subset
-  output$raw_table <- renderDT({
-    df <- raw_data()
-    req(df)
-    df2 <- df[input$row_sel[1]:input$row_sel[2], input$cols, drop = FALSE]
-    datatable(df2, options = list(pageLength = 10))
+  # Data Download logic
+  output$col_selector <- renderUI({ df <- raw_data(); req(df)
+  selectInput("cols","Columns:", names(df), names(df), multiple = TRUE)
   })
-  
-  # 4) Download handler
+  output$row_selector <- renderUI({ df <- raw_data(); req(df)
+  sliderInput("row_sel","Rows:", 1, nrow(df), value = c(1, min(100, nrow(df))))
+  })
+  output$raw_table <- renderDT({ df <- raw_data(); req(df)
+  df[input$row_sel[1]:input$row_sel[2], input$cols, drop = FALSE]
+  })
   output$download <- downloadHandler(
-    filename = function() {
-      paste0(input$entity, "_data.csv")
-    },
-    content = function(file) {
-      df <- raw_data()
-      df2 <- df[input$row_sel[1]:input$row_sel[2], input$cols, drop = FALSE]
-      write.csv(df2, file, row.names = FALSE)
-    }
+    filename = function() paste0(input$entity, ".csv"),
+    content = function(file) { df <- raw_data(); write.csv(df[input$row_sel[1]:input$row_sel[2], input$cols, drop = FALSE], file, row.names = FALSE) }
   )
   
-  # 5) Dataset selector for exploration
-  output$dataset_selector <- renderUI({
-    req(raw_data())
-    selectInput("which_ds", "Data for exploration:",
-                choices = c("Raw Data" = "raw"), selected = "raw")
-  })
-  ds <- reactive({
-    if (input$which_ds == "raw") raw_data()
-    # (could add precomputed summaries here)
-  })
+  # Data Exploration logic
+  summary_tbl <- reactive({ match.fun(input$summary_type)(raw_data()) })
+  output$summary_tbl <- renderTable({ summary_tbl() })
   
-  # 6) Dynamic var selectors
-  output$cat_selector <- renderUI({
-    df <- ds()
-    req(df)
-    nums <- vapply(df, is.numeric, logical(1))
-    cats <- names(df)[!nums]
-    selectInput("cat_var", "Categorical variable:", choices = cats)
-  })
-  output$num_selector <- renderUI({
-    df <- ds()
-    req(df)
-    nums <- vapply(df, is.numeric, logical(1))
-    selectInput("num_var", "Numeric variable:", choices = names(df)[nums])
-  })
-  
-  # 7) Facet selector (only for heatmap or scatter)
-  output$facet_selector <- renderUI({
-    req(input$plot_type)
-    if (input$plot_type %in% c("Heatmap", "Scatter")) {
-      df <- ds()
-      req(df)
-      nums <- vapply(df, is.numeric, logical(1))
-      cats <- names(df)[!nums]
-      selectInput("facet_var", "Facet by (categorical):", choices = cats)
-    }
-  })
-  
-  # 8) Contingency & summary tables
-  output$ctable <- renderTable({
-    df <- ds()
-    req(df, input$cat_var)
-    df %>% 
-      count(!!sym(input$cat_var)) %>%
-      rename(Count = n)
-  })
-  output$num_summary <- renderTable({
-    df <- ds()
-    req(df, input$cat_var, input$num_var)
-    df %>%
-      group_by(!!sym(input$cat_var)) %>%
-      summarize(
-        n      = n(),
-        mean   = mean(!!sym(input$num_var), na.rm = TRUE),
-        median = median(!!sym(input$num_var), na.rm = TRUE),
-        sd     = sd(!!sym(input$num_var), na.rm = TRUE)
-      )
-  })
-  
-  # 9) Plotly plot
-  output$plotly <- renderPlotly({
-    df <- ds()
-    req(df, input$cat_var, input$num_var, input$plot_type)
-    
-    p <- switch(input$plot_type,
-                "Bar"      = {
-                  df %>% count(!!sym(input$cat_var)) %>%
-                    ggplot(aes_string(x = input$cat_var, y = "n", fill = input$cat_var)) +
-                    geom_col() + theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-                    labs(y = "Count", title = "Bar Chart")
-                },
-                "Boxplot"  = {
-                  ggplot(df, aes_string(x = input$cat_var, y = input$num_var, fill = input$cat_var)) +
-                    geom_boxplot() + theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-                    labs(title = "Boxplot")
-                },
-                "Heatmap"  = {
-                  req(input$facet_var)
-                  df2 <- df %>%
-                    unnest_longer(input$facet_var, values_to = "facet_val") %>%
-                    count(!!sym(input$facet_var), !!sym(input$cat_var))
-                  ggplot(df2, aes_string(x = input$cat_var, y = input$facet_var, fill = "n")) +
-                    geom_tile() +
-                    labs(title = "Heatmap", fill = "Count")
-                },
-                "Scatter" = {
-                  req(input$facet_var)
-                  ggplot(df, aes_string(x = input$num_var, y = input$cat_var, color = input$facet_var)) +
-                    geom_point(alpha = 0.7) +
-                    labs(title = "Scatter Plot")
-                }
-    )
-    
-    ggplotly(p)
-  })
-  
+  output$plotly_obj <- renderPlotly({ p <- match.fun(input$plot_type)(raw_data()); ggplotly(p) })
 }
 
-shinyApp(ui, server)
-
-
-shiny::runGitHub(
-  repo     = "Project2_API",
-  username = "mhongji"
-)
-
+# Run the app
+shinyApp(ui = ui, server = server)
